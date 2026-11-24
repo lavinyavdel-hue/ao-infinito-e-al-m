@@ -1,0 +1,708 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<title>Piloto Pega-Chaves</title>
+<style>
+  /* A página inteira fica escura e o jogo fica centralizado */
+  html, body { margin:0; height:100%; background:#111; overflow:hidden; }
+  body { display:flex; align-items:center; justify-content:center; user-select:none; -webkit-user-select:none; }
+
+  /* RESPONSIVIDADE: o jogo cresce até caber na tela, sempre na proporção 16:9 (horizontal) */
+  canvas {
+    width: min(100vw, calc(100vh * 16 / 9));
+    width: min(100vw, calc(100dvh * 16 / 9));
+    aspect-ratio: 16 / 9;
+    display: block;
+    touch-action: none;   /* evita rolar a página ao arrastar o dedo */
+    background: #000;
+  }
+
+  /* Aviso que só aparece quando o aparelho está em pé (vertical) */
+  #aviso { display:none; position:fixed; top:6px; left:0; right:0; text-align:center;
+           color:#fc0; font:bold 14px sans-serif; text-shadow:0 0 4px #000; pointer-events:none; z-index:2; }
+  @media (orientation: portrait) { #aviso { display:block; } }
+</style>
+</head>
+<body>
+
+<div id="aviso">📱 Gire o aparelho para a horizontal para jogar melhor</div>
+<canvas id="tela" width="800" height="450"></canvas>
+
+<script>
+// =====================================================================
+// 1. PREPARAÇÃO
+// O jogo usa um "mundo" fixo de 800 x 450. O CSS estica esse mundo para
+// caber em qualquer tela, e as contas de toque/mouse são ajustadas.
+// =====================================================================
+var W = 800, H = 450;       // largura e altura do mundo
+var CHAO = 400;             // altura do chão
+var TOPO = 340;             // altura onde o veículo "começa" (para pegar itens)
+var tela = document.getElementById("tela");
+var pincel = tela.getContext("2d");   // o "pincel" que desenha na tela
+
+// Deixa a imagem nítida em telas grandes e de alta resolução
+function ajustarTela() {
+  var r = tela.getBoundingClientRect();
+  var esc = Math.min(3, Math.max(1, (r.width / W) * (window.devicePixelRatio || 1)));
+  tela.width = Math.round(W * esc);
+  tela.height = Math.round(H * esc);
+  pincel.setTransform(esc, 0, 0, esc, 0, 0);
+}
+window.onresize = ajustarTela;
+window.onorientationchange = ajustarTela;
+ajustarTela();
+
+// =====================================================================
+// 2. PERSONAGENS E VEÍCULOS (o menu deixa escolher!)
+// larg = largura do veículo (mais largo = mais fácil pegar, mas mais lento)
+// vel  = velocidade do veículo
+// =====================================================================
+var personagens = [
+  { nome: "Duda", pele: "#f5c08a", capacete: "#ffffff", faixa: "#ff8800", roupa: "#3377cc" },
+  { nome: "Léo",  pele: "#8d5a3b", capacete: "#22aa66", faixa: "#ffffff", roupa: "#cc3333" },
+  { nome: "Mari", pele: "#e8a87c", capacete: "#ee44aa", faixa: "#ffff00", roupa: "#663399" },
+  { nome: "Zeca", pele: "#c68642", capacete: "#ffcc00", faixa: "#222222", roupa: "#22aa88" }
+];
+var veiculos = [
+  { nome: "Carro veloz",     larg: 100, vel: 8   },
+  { nome: "Caminhão",        larg: 140, vel: 6   },
+  { nome: "Nave da Alegria", larg: 150, vel: 5.5 },
+  { nome: "Buggy ligeiro",   larg: 80,  vel: 9.5 }
+];
+
+// =====================================================================
+// 3. CENÁRIOS (um para cada fase). Cada um é só uma lista de cores e
+// camadas que passam em velocidades diferentes (efeito de profundidade).
+// =====================================================================
+var temas = [
+  { c1: "#4db8ff", c2: "#bfe9ff", astro: { x: 640, y: 90, r: 36, cor: "#fff27a" },
+    camadas: [ { t: "predios", cor: "#7b93ad", alt: 170, v: 12 }, { t: "predios", cor: "#546b86", alt: 110, v: 30 } ], chao: "#555555" },
+  { c1: "#ff7b3a", c2: "#ffd27a", astro: { x: 300, y: 250, r: 80, cor: "#ffe9a0" },
+    camadas: [ { t: "dunas", cor: "#d9833a", alt: 130, v: 10 }, { t: "dunas", cor: "#b9642a", alt: 80, v: 28 } ], chao: "#a85a28" },
+  { c1: "#5fc86a", c2: "#d4f8c8", astro: { x: 130, y: 80, r: 30, cor: "#fffbb0" },
+    camadas: [ { t: "morros", cor: "#3f8f4f", alt: 170, v: 10 }, { t: "arvores", cor: "#1f6b35", alt: 120, v: 32 } ], chao: "#2f7a3a" },
+  { c1: "#27b6e8", c2: "#d6f6ff", astro: { x: 560, y: 70, r: 34, cor: "#fff27a" },
+    camadas: [ { t: "mar", cor: "#1b86c9", alt: 140 }, { t: "arvores", cor: "#2d9b4a", alt: 100, v: 30 } ], chao: "#e8d28a" },
+  { c1: "#9fb8d8", c2: "#eef6ff", astro: null, part: "neve",
+    camadas: [ { t: "morros", cor: "#7f98b8", alt: 220, v: 8, neve: true }, { t: "morros", cor: "#a3b8d4", alt: 140, v: 20, neve: true } ], chao: "#f4f9ff" },
+  { c1: "#0b1030", c2: "#2b3a7a", astro: { x: 650, y: 80, r: 30, cor: "#f4f4d8" }, estrelas: true,
+    camadas: [ { t: "predios", cor: "#1a2145", alt: 190, v: 12, janelas: true }, { t: "predios", cor: "#10162f", alt: 120, v: 30, janelas: true } ], chao: "#2a2a35" },
+  { c1: "#000010", c2: "#1a0b3a", astro: { x: 600, y: 130, r: 65, cor: "#d77a4a" }, estrelas: true,
+    camadas: [ { t: "morros", cor: "#555566", alt: 90, v: 6 }, { t: "morros", cor: "#777788", alt: 55, v: 20 } ], chao: "#888899" },
+  { c1: "#2a0505", c2: "#e0481a", astro: null, part: "brasa",
+    camadas: [ { t: "morros", cor: "#3a1010", alt: 260, v: 6 }, { t: "morros", cor: "#241010", alt: 130, v: 22 } ], chao: "#2b1410" }
+];
+
+// =====================================================================
+// 4. CONFIGURAÇÃO DAS FASES
+//  meta    = chaves para passar de fase       vel = velocidade de queda
+//  chance  = chance de nascer chave           pedras = chance de nascer pedra
+//  balanco = quanto os itens balançam         grav = "peso" (1 = normal)
+//  ev      = SURPRESAS que podem acontecer durante a fase
+//  gelo    = chão escorregadio
+// =====================================================================
+var fases = [
+  { nome: "Cidade ensolarada",     meta: 8,  vel: 2.2, chance: 0.018, pedras: 0,     balanco: 0,  grav: 1,   ev: [] },
+  { nome: "Deserto ao entardecer", meta: 10, vel: 2.6, chance: 0.022, pedras: 0,     balanco: 22, grav: 1,   ev: [] },
+  { nome: "Floresta encantada",    meta: 12, vel: 2.9, chance: 0.026, pedras: 0.005, balanco: 30, grav: 1,   ev: ["vento"] },
+  { nome: "Praia ventania",        meta: 14, vel: 3.2, chance: 0.030, pedras: 0.008, balanco: 35, grav: 1,   ev: ["vento", "rajada"] },
+  { nome: "Montanha gelada",       meta: 16, vel: 3.4, chance: 0.032, pedras: 0.010, balanco: 30, grav: 1,   ev: ["rajada", "turbo"], gelo: true, aviso: "CHÃO DE GELO: você escorrega!" },
+  { nome: "Noite na cidade",       meta: 18, vel: 3.6, chance: 0.036, pedras: 0.012, balanco: 40, grav: 1,   ev: ["invertido", "vento", "chuvaPedras"] },
+  { nome: "Lua e estrelas",        meta: 20, vel: 3.8, chance: 0.040, pedras: 0.014, balanco: 70, grav: 0.7, ev: ["neblina", "turbo", "rajada", "invertido"], aviso: "POUCA GRAVIDADE: tudo flutua!" },
+  { nome: "Vulcão final",          meta: 24, vel: 4.0, chance: 0.045, pedras: 0.018, balanco: 50, grav: 1,   ev: ["vento", "rajada", "chuvaPedras", "turbo", "invertido", "neblina"] }
+];
+
+// Nomes e duração (em "quadros") de cada surpresa
+var nomesEvento = { vento: "VENTO FORTE!", rajada: "CHUVA DE CHAVES!", chuvaPedras: "CHUVA DE PEDRAS!",
+                    turbo: "TUDO MAIS RÁPIDO!", invertido: "COMANDOS INVERTIDOS!", neblina: "NEBLINA!" };
+var duracaoEvento = { vento: 300, rajada: 150, chuvaPedras: 150, turbo: 240, invertido: 260, neblina: 300 };
+
+// =====================================================================
+// 5. VARIÁVEIS DO JOGO + MEMÓRIA DO APARELHO (guarda suas escolhas)
+// =====================================================================
+var VIDAS_MAX = 5;
+var salvo = {};
+try { salvo = JSON.parse(localStorage.getItem("pilotoChaves") || "{}"); } catch (e) {}
+var pSel = (salvo.p < personagens.length) ? (salvo.p || 0) : 0;      // personagem escolhido
+var vSel = (salvo.v < veiculos.length) ? (salvo.v || 0) : 0;         // veículo escolhido
+var faseSalva = (salvo.fase < fases.length) ? (salvo.fase || 0) : 0; // maior fase alcançada
+var somLigado = salvo.som !== false;
+
+function salvar() {
+  try { localStorage.setItem("pilotoChaves", JSON.stringify({ p: pSel, v: vSel, fase: faseSalva, som: somLigado })); } catch (e) {}
+}
+
+var estado = "menu";       // menu, intro, jogando, pausa, faseOk, fim, vitoria
+var faseAtual = 0;
+var cenAnt = -1, fade = 0; // usados para misturar o cenário antigo com o novo
+var pontos = 0, pontosInicio = 0;
+var vidas = VIDAS_MAX;
+var chavesFase = 0;
+var itens = [];            // chaves e pedras caindo
+var efeitos = [];          // textos que sobem (+10)
+var evento = null;         // surpresa em andamento
+var proxEvento = 0;        // contagem para a próxima surpresa
+var banner = { txt: "", resta: 0 };
+var tremor = 0;
+var pilotoX = 350, velX = 0, alvoX = null;
+var teclaEsquerda = false, teclaDireita = false;
+
+// =====================================================================
+// 6. MÚSICA E SONS (criados pelo próprio navegador, sem arquivos!)
+// =====================================================================
+var audioCtx = null, passoMusica = 0;
+// Cada número é uma nota (0 = silêncio). Uma melodia alegre e um baixo.
+var melodia = [72,0,76,0,79,76,72,0, 74,0,77,0,81,77,74,0, 76,0,79,0,83,79,76,0, 74,76,77,79,77,76,74,0];
+var baixo   = [48,0,48,0,53,0,53,0, 55,0,55,0,48,0,48,0, 45,0,45,0,50,0,50,0, 55,0,55,0,48,0,55,0];
+
+function freq(m) { return 440 * Math.pow(2, (m - 69) / 12); }   // número da nota -> frequência
+
+function tom(m, dur, tipo, vol) {
+  if (!audioCtx || !somLigado) return;
+  var o = audioCtx.createOscillator(), g = audioCtx.createGain();
+  var t0 = audioCtx.currentTime;
+  o.type = tipo;
+  o.frequency.value = freq(m);
+  g.gain.setValueAtTime(vol, t0);
+  g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+  o.connect(g); g.connect(audioCtx.destination);
+  o.start(t0); o.stop(t0 + dur);
+}
+function arpejo(notas, intervalo) {            // toca várias notas em sequência
+  for (var i = 0; i < notas.length; i++) {
+    (function (n, k) { setTimeout(function () { tom(n, 0.18, "square", 0.06); }, k * intervalo); })(notas[i], i);
+  }
+}
+function tocarMusica() {                       // toca um passo da música e agenda o próximo
+  var i = passoMusica % melodia.length;
+  if (!document.hidden && estado != "pausa") {
+    if (melodia[i]) tom(melodia[i], 0.18, "square", 0.035);
+    if (baixo[i])   tom(baixo[i], 0.3, "triangle", 0.07);
+  }
+  passoMusica++;
+  setTimeout(tocarMusica, Math.max(120, 230 - faseAtual * 14));   // fases altas = música mais rápida
+}
+function iniciarAudio() {                      // navegadores só liberam som depois de um toque/tecla
+  if (audioCtx) { if (audioCtx.state == "suspended") audioCtx.resume(); return; }
+  try {
+    var AC = window.AudioContext || window.webkitAudioContext;
+    audioCtx = new AC();
+    tocarMusica();
+  } catch (e) {}
+}
+function alternarSom() { somLigado = !somLigado; salvar(); }
+
+// =====================================================================
+// 7. BOTÕES (menu e telas). Cada botão tem posição, texto e uma ação.
+// =====================================================================
+function mudar(qual, d) {
+  if (qual == 0) pSel = (pSel + d + personagens.length) % personagens.length;
+  else vSel = (vSel + d + veiculos.length) % veiculos.length;
+  salvar();
+  tom(84, 0.08, "square", 0.05);
+}
+function pausar() {
+  if (estado == "jogando") estado = "pausa";
+  else if (estado == "pausa") estado = "jogando";
+}
+function irMenu() { estado = "menu"; itens = []; evento = null; salvar(); }
+function iniciar(fase) {                       // começa uma partida na fase indicada
+  faseAtual = fase; pontos = 0; cenAnt = -1; fade = 0;
+  prepararFase();
+}
+function prepararFase() {                      // arruma tudo para a fase atual
+  itens = []; efeitos = [];
+  chavesFase = 0;
+  vidas = VIDAS_MAX;                           // cada fase começa com todas as vidas
+  evento = null;
+  proxEvento = 200 + Math.random() * 200;
+  pontosInicio = pontos;                       // guarda os pontos para o caso de tentar de novo
+  velX = 0; alvoX = null;
+  pilotoX = W / 2 - veiculos[vSel].larg / 2;
+  faseSalva = Math.max(faseSalva, faseAtual);
+  salvar();
+  estado = "intro";
+}
+function comecarFase() {
+  estado = "jogando";
+  if (fases[faseAtual].aviso) mostrarBanner(fases[faseAtual].aviso, 200);
+}
+function proximaFase() { cenAnt = faseAtual; fade = 1; faseAtual++; prepararFase(); }   // o cenário muda!
+function tentarDeNovo() { pontos = pontosInicio; prepararFase(); }                        // continua na MESMA fase
+function mostrarBanner(txt, tempo) { banner.txt = txt; banner.resta = tempo; }
+
+function btn(x, y, w, h, txt, acao, extra) {
+  var b = { x: x, y: y, w: w, h: h, txt: txt, acao: acao, cor: "#ffcc00", fonte: 22 };
+  for (var k in extra) b[k] = extra[k];
+  return b;
+}
+function botoes() {                            // lista de botões da tela atual
+  var b = [];
+  b.push(btn(760, 26, 36, 36, "♪", alternarSom, { cor: "#ffffff", fonte: 22, corte: !somLigado }));
+  if (estado == "jogando" || estado == "pausa") b.push(btn(716, 26, 36, 36, "II", pausar, { cor: "#ffffff", fonte: 18 }));
+
+  if (estado == "menu") {
+    b.push(btn(200, 232, 50, 42, "◀", function () { mudar(0, -1); }, { cor: "#ffffff" }));
+    b.push(btn(600, 232, 50, 42, "▶", function () { mudar(0, 1); }, { cor: "#ffffff" }));
+    b.push(btn(200, 295, 50, 42, "◀", function () { mudar(1, -1); }, { cor: "#ffffff" }));
+    b.push(btn(600, 295, 50, 42, "▶", function () { mudar(1, 1); }, { cor: "#ffffff" }));
+    b.push(btn(400, 352, 320, 50, faseSalva > 0 ? "CONTINUAR (Fase " + (faseSalva + 1) + ")" : "JOGAR",
+               function () { iniciar(faseSalva); }, { principal: true, fonte: 24 }));
+    if (faseSalva > 0) b.push(btn(400, 405, 220, 32, "Recomeçar do zero",
+               function () { faseSalva = 0; iniciar(0); }, { cor: "#cccccc", fonte: 16 }));
+  }
+  if (estado == "intro")   b.push(btn(400, 330, 300, 50, "LARGAR!", comecarFase, { principal: true, fonte: 26 }));
+  if (estado == "faseOk")  b.push(btn(400, 330, 320, 50, "PRÓXIMA FASE ▶", proximaFase, { principal: true }));
+  if (estado == "fim") {
+    b.push(btn(400, 320, 380, 50, "TENTAR A FASE " + (faseAtual + 1) + " DE NOVO", tentarDeNovo, { principal: true }));
+    b.push(btn(400, 380, 200, 38, "MENU", irMenu, { cor: "#cccccc", fonte: 18 }));
+  }
+  if (estado == "vitoria") {
+    b.push(btn(400, 320, 300, 50, "JOGAR DE NOVO", function () { iniciar(0); }, { principal: true }));
+    b.push(btn(400, 380, 200, 38, "MENU", irMenu, { cor: "#cccccc", fonte: 18 }));
+  }
+  if (estado == "pausa") {
+    b.push(btn(400, 300, 300, 50, "CONTINUAR", pausar, { principal: true }));
+    b.push(btn(400, 360, 200, 38, "MENU", irMenu, { cor: "#cccccc", fonte: 18 }));
+  }
+  return b;
+}
+
+// =====================================================================
+// 8. CONTROLES (teclado, mouse e toque)
+// =====================================================================
+function acionarPrincipal() {                  // ENTER ou ESPAÇO = botão principal da tela
+  var lista = botoes();
+  for (var i = 0; i < lista.length; i++) if (lista[i].principal) { lista[i].acao(); return; }
+}
+document.onkeydown = function (e) {
+  iniciarAudio();
+  var k = e.key;
+  if (k == "ArrowLeft"  || k == "a" || k == "A") { teclaEsquerda = true; alvoX = null; }
+  if (k == "ArrowRight" || k == "d" || k == "D") { teclaDireita = true;  alvoX = null; }
+  if (k == "p" || k == "P" || k == "Escape") pausar();
+  if (k == "m" || k == "M") alternarSom();
+  if ((k == "Enter" || k == " ") && !e.repeat) acionarPrincipal();
+  if (k == " " || k.indexOf("Arrow") == 0) e.preventDefault();
+};
+document.onkeyup = function (e) {
+  var k = e.key;
+  if (k == "ArrowLeft"  || k == "a" || k == "A") teclaEsquerda = false;
+  if (k == "ArrowRight" || k == "d" || k == "D") teclaDireita = false;
+};
+document.addEventListener("visibilitychange", function () { if (document.hidden && estado == "jogando") estado = "pausa"; });
+
+// Converte a posição do toque/mouse para o "mundo" do jogo (800 x 450)
+function posicao(e) {
+  var r = tela.getBoundingClientRect();
+  return { x: (e.clientX - r.left) * W / r.width, y: (e.clientY - r.top) * H / r.height };
+}
+function irPara(px) {                          // o veículo vai até a posição tocada
+  var larg = veiculos[vSel].larg;
+  alvoX = (evento && evento.tipo == "invertido") ? W - px - larg / 2 : px - larg / 2;
+}
+tela.onpointerdown = function (e) {
+  iniciarAudio();
+  var p = posicao(e), lista = botoes();
+  for (var i = 0; i < lista.length; i++) {     // clicou em algum botão?
+    var b = lista[i];
+    if (Math.abs(p.x - b.x) <= b.w / 2 && Math.abs(p.y - b.y) <= b.h / 2) { b.acao(); return; }
+  }
+  if (estado == "jogando") irPara(p.x);
+};
+tela.onpointermove = function (e) { if (estado == "jogando") irPara(posicao(e).x); };
+
+// =====================================================================
+// 9. ATUALIZAR (muda as posições a cada instante)
+// dt = quanto tempo passou (1 = um quadro a 60 por segundo). Assim o jogo
+// roda na mesma velocidade em celulares e monitores rápidos.
+// =====================================================================
+function criarItem(tipo) {
+  var f = fases[faseAtual];
+  itens.push({
+    tipo: tipo,
+    baseX: 30 + Math.random() * (W - 60),
+    x: 0, y: -40,
+    vel: f.vel + Math.random() * 1.5,
+    balanco: Math.random() * f.balanco,
+    ouro: tipo == "chave" && faseAtual >= 1 && Math.random() < 0.08    // chave diamante: vale mais!
+  });
+}
+
+function sortearEvento() {                     // a SURPRESA: escolhe um evento ao acaso
+  var f = fases[faseAtual];
+  var t = f.ev[Math.floor(Math.random() * f.ev.length)];
+  evento = { tipo: t, resta: duracaoEvento[t], dir: Math.random() < 0.5 ? -1 : 1 };
+  mostrarBanner("⚠ " + nomesEvento[t], 150);
+  tom(60, 0.3, "sawtooth", 0.08);
+}
+
+function atualizar(dt) {
+  var f = fases[faseAtual], v = veiculos[vSel];
+
+  // --- Surpresas ---
+  if (evento) {
+    evento.resta -= dt;
+    if (evento.resta <= 0) { evento = null; proxEvento = 300 + Math.random() * 300 - faseAtual * 20; }
+  } else if (f.ev.length > 0) {
+    proxEvento -= dt;
+    if (proxEvento <= 0) sortearEvento();
+  }
+  var tipoEv = evento ? evento.tipo : "";
+  var vento = (tipoEv == "vento") ? evento.dir * 2.2 : 0;
+  var fatorVel = (tipoEv == "turbo" ? 1.6 : 1) * f.grav;
+  var chanceChave = f.chance * (tipoEv == "rajada" ? 5 : 1);
+  var chancePedra = f.pedras + (tipoEv == "chuvaPedras" ? 0.07 : 0);
+
+  // --- Movimento do veículo ---
+  var dir = (teclaDireita ? 1 : 0) - (teclaEsquerda ? 1 : 0);
+  if (tipoEv == "invertido") dir = -dir;
+  if (f.gelo) {                                // gelo: acelera devagar e escorrega
+    velX += dir * 0.5 * dt * (v.vel / 7);
+    velX *= Math.pow(0.95, dt);
+    pilotoX += velX * dt;
+  } else {
+    pilotoX += dir * v.vel * dt;
+  }
+  if (alvoX !== null) pilotoX += (alvoX - pilotoX) * Math.min(1, (f.gelo ? 0.06 : 0.4) * dt);
+  pilotoX += vento * dt;
+  if (pilotoX < 0) { pilotoX = 0; velX = 0; }
+  if (pilotoX > W - v.larg) { pilotoX = W - v.larg; velX = 0; }
+
+  // --- Nascem chaves e pedras ---
+  if (Math.random() < chanceChave * dt) criarItem("chave");
+  if (Math.random() < chancePedra * dt) criarItem("pedra");
+
+  // --- Move os itens e confere colisões ---
+  for (var i = itens.length - 1; i >= 0; i--) {
+    var it = itens[i];
+    it.y += it.vel * fatorVel * dt;
+    it.baseX += vento * 0.5 * dt;
+    it.x = it.baseX + Math.sin(it.y / 30) * it.balanco;
+
+    if (it.y + 38 > TOPO && it.x + 20 > pilotoX && it.x < pilotoX + v.larg) {   // encostou no veículo
+      if (it.tipo == "chave") {
+        var ganho = it.ouro ? 30 : 10;
+        pontos += ganho;
+        chavesFase += it.ouro ? 3 : 1;
+        efeitos.push({ x: it.x, y: it.y, txt: "+" + ganho, cor: it.ouro ? "#7ff" : "#ff0", vida: 45 });
+        if (it.ouro) arpejo([84, 88, 91], 60); else tom(88, 0.1, "square", 0.05);
+      } else {
+        vidas--;
+        tremor = 14;
+        efeitos.push({ x: it.x, y: it.y, txt: "-1 ♥", cor: "#f55", vida: 45 });
+        tom(36, 0.3, "sawtooth", 0.12);
+      }
+      itens.splice(i, 1);
+    } else if (it.y + 38 > CHAO + 6) {          // caiu no chão
+      if (it.tipo == "chave") { vidas--; tom(48, 0.2, "triangle", 0.1); }
+      itens.splice(i, 1);
+    }
+  }
+
+  // --- Efeitos, aviso e tremor ---
+  for (var j = efeitos.length - 1; j >= 0; j--) {
+    efeitos[j].y -= 0.8 * dt; efeitos[j].vida -= dt;
+    if (efeitos[j].vida <= 0) efeitos.splice(j, 1);
+  }
+  if (banner.resta > 0) banner.resta -= dt;
+  if (tremor > 0) tremor = Math.max(0, tremor - dt);
+
+  // --- A situação do jogo mudou? ---
+  if (vidas <= 0) {
+    estado = "fim"; itens = []; evento = null;
+    arpejo([60, 55, 50, 43], 150);
+  } else if (chavesFase >= f.meta) {
+    itens = []; evento = null;
+    pontos += 50;                              // bônus por passar de fase
+    if (faseAtual == fases.length - 1) {
+      estado = "vitoria"; faseSalva = 0; salvar();
+      arpejo([72, 76, 79, 84, 79, 84, 88, 91], 140);
+    } else {
+      estado = "faseOk";
+      arpejo([72, 76, 79, 84], 120);
+    }
+  }
+}
+
+// =====================================================================
+// 10. DESENHAR
+// =====================================================================
+function circulo(x, y, r) { pincel.beginPath(); pincel.arc(x, y, r, 0, 6.2832); pincel.fill(); }
+
+// Escreve um texto (alinh: "center", "left" ou "right")
+function texto(s, x, y, tam, cor, alinh, fino) {
+  pincel.font = (fino ? "" : "bold ") + tam + "px sans-serif";
+  pincel.fillStyle = cor;
+  pincel.textAlign = alinh || "center";
+  pincel.textBaseline = "middle";
+  pincel.fillText(s, x, y);
+}
+function textoSombra(s, x, y, tam, cor) { texto(s, x + 2, y + 3, tam, "rgba(0,0,0,0.6)"); texto(s, x, y, tam, cor); }
+
+// ---------- Cenário ----------
+function camada(L, t) {                        // uma camada de fundo que corre para o lado
+  pincel.fillStyle = L.cor;
+  if (L.t == "mar") {
+    var topo = CHAO - L.alt;
+    pincel.fillRect(0, topo, W, L.alt);
+    pincel.fillStyle = "rgba(255,255,255,0.4)";
+    for (var j = 0; j < 14; j++) {             // ondinhas que se mexem
+      var wx = ((j * 70 - t * 40) % 980 + 980) % 980 - 90;
+      pincel.fillRect(wx, topo + 14 + (j % 4) * ((L.alt - 20) / 4), 34, 3);
+    }
+    return;
+  }
+  var desloc = t * L.v, tw = 120;
+  var base = Math.floor(desloc / tw), sub = desloc % tw;
+  for (var k = -1; k <= W / tw + 1; k++) {
+    var n = k + base, x = k * tw - sub;
+    var h = L.alt * (0.55 + 0.45 * Math.abs(Math.sin(n * 12.9898)));   // altura "aleatória" fixa
+    if (L.t == "predios") {
+      pincel.fillStyle = L.cor;
+      pincel.fillRect(x, CHAO - h, tw - 10, h);
+      if (L.janelas) {
+        pincel.fillStyle = "#ffe27a";
+        for (var wy = CHAO - h + 10; wy < CHAO - 20; wy += 22)
+          for (var wx2 = x + 10; wx2 < x + tw - 30; wx2 += 22)
+            if (Math.sin(n * 7 + wy + wx2) > 0) pincel.fillRect(wx2, wy, 8, 10);
+      }
+    } else if (L.t == "morros") {
+      pincel.fillStyle = L.cor;
+      pincel.beginPath();
+      pincel.moveTo(x - 20, CHAO); pincel.lineTo(x + tw / 2, CHAO - h); pincel.lineTo(x + tw + 20, CHAO);
+      pincel.fill();
+      if (L.neve) {                            // pontinha branca de neve
+        pincel.fillStyle = "#ffffff";
+        pincel.beginPath();
+        pincel.moveTo(x + tw / 2, CHAO - h);
+        pincel.lineTo(x + tw / 2 - 0.28 * (tw / 2 + 20), CHAO - h + 0.28 * h);
+        pincel.lineTo(x + tw / 2 + 0.28 * (tw / 2 + 20), CHAO - h + 0.28 * h);
+        pincel.fill();
+      }
+    } else if (L.t == "dunas") {
+      pincel.fillStyle = L.cor;
+      pincel.beginPath();
+      pincel.ellipse(x + tw / 2, CHAO, tw * 0.7, h, 0, Math.PI, 2 * Math.PI);
+      pincel.fill();
+    } else if (L.t == "arvores") {
+      pincel.fillStyle = "#5b3a1e";
+      pincel.fillRect(x + tw / 2 - 4, CHAO - h * 0.5, 8, h * 0.5);
+      pincel.fillStyle = L.cor;
+      circulo(x + tw / 2, CHAO - h * 0.55, h * 0.35);
+    }
+  }
+}
+
+function cenario(i, t) {                       // desenha o cenário completo do tema i
+  var c = temas[i];
+  var g = pincel.createLinearGradient(0, 0, 0, CHAO);
+  g.addColorStop(0, c.c1); g.addColorStop(1, c.c2);
+  pincel.fillStyle = g;
+  pincel.fillRect(0, 0, W, CHAO);
+  if (c.estrelas) {
+    pincel.fillStyle = "#ffffff";
+    for (var s = 0; s < 50; s++) circulo((s * 97.3) % W, (s * 53.7) % 260, 1 + (s % 2) * (0.5 + 0.5 * Math.sin(t * 2 + s)));
+  }
+  if (c.astro) { pincel.fillStyle = c.astro.cor; circulo(c.astro.x, c.astro.y, c.astro.r); }
+  for (var k = 0; k < c.camadas.length; k++) camada(c.camadas[k], t);
+
+  pincel.fillStyle = c.chao;                   // chão e faixas que correm
+  pincel.fillRect(0, CHAO, W, H - CHAO);
+  pincel.fillStyle = "rgba(255,255,255,0.5)";
+  for (var d = -1; d < W / 80 + 1; d++) pincel.fillRect(d * 80 - (t * 160) % 80, CHAO + 24, 40, 4);
+
+  if (c.part == "neve") {                      // neve caindo
+    pincel.fillStyle = "#ffffff";
+    for (var q = 0; q < 70; q++)
+      circulo(((q * 83.1 + Math.sin(t + q) * 18) % W + W) % W, (q * 37.7 + t * (50 + (q % 4) * 15)) % CHAO, 2);
+  }
+  if (c.part == "brasa") {                     // brasas subindo
+    pincel.fillStyle = "#ffb347";
+    for (var r = 0; r < 50; r++)
+      circulo((r * 61 + Math.sin(t + r) * 14 + W) % W, CHAO - (r * 29 + t * (40 + (r % 3) * 20)) % CHAO, 2);
+  }
+}
+
+// ---------- Itens ----------
+function desenharChave(x, y, ouro, fundo) {
+  var cor = ouro ? "#55ffee" : "#ffcc00";
+  pincel.fillStyle = cor;
+  circulo(x + 10, y + 10, 10);                 // argola
+  pincel.fillStyle = fundo;
+  circulo(x + 10, y + 10, 4);                  // buraco
+  pincel.fillStyle = cor;
+  pincel.fillRect(x + 8, y + 18, 4, 20);       // haste
+  pincel.fillRect(x + 12, y + 30, 6, 3);       // dentes
+  pincel.fillRect(x + 12, y + 35, 4, 3);
+  if (ouro) { pincel.fillStyle = "#ffffff"; circulo(x + 6, y + 6, 2); }
+}
+function desenharPedra(x, y) {
+  pincel.fillStyle = "#777777"; circulo(x + 10, y + 26, 13);
+  pincel.fillStyle = "#999999"; circulo(x + 6, y + 22, 4);
+}
+
+// ---------- Personagem e veículos ----------
+function desenharPersonagem(cx, cy, p, s) {    // cx,cy = centro da cabeça; s = tamanho
+  pincel.fillStyle = p.roupa;   pincel.fillRect(cx - 8 * s, cy + 8 * s, 16 * s, 14 * s);   // corpo
+  pincel.fillStyle = p.pele;    circulo(cx, cy, 10 * s);                                  // rosto
+  pincel.fillStyle = p.capacete;
+  pincel.beginPath(); pincel.arc(cx, cy, 11 * s, Math.PI, 2 * Math.PI); pincel.fill();    // capacete
+  pincel.fillStyle = p.faixa;   pincel.fillRect(cx - 11 * s, cy - 6 * s, 22 * s, 3 * s);  // faixa
+  pincel.fillStyle = "#222222"; pincel.fillRect(cx - 2 * s, cy - 1 * s, 12 * s, 5 * s);   // óculos
+}
+function roda(cx, cy, r, cubo) {
+  pincel.fillStyle = "#111111"; circulo(cx, cy, r);
+  pincel.fillStyle = cubo;      circulo(cx, cy, r * 0.5);
+}
+function desenharVeiculo(i, x, b, p) {         // x = lado esquerdo, b = linha do chão
+  if (i == 0) {                                // CARRO
+    desenharPersonagem(x + 42, b - 46, p, 1);
+    pincel.fillStyle = "#dd2222";
+    pincel.fillRect(x, b - 32, 100, 18); pincel.fillRect(x + 66, b - 38, 34, 8);
+    pincel.fillRect(x - 2, b - 46, 14, 3); pincel.fillRect(x + 2, b - 46, 3, 14);
+    pincel.fillStyle = "#ffffff"; pincel.fillRect(x + 10, b - 27, 50, 3);
+    roda(x + 22, b - 11, 11, "#cccccc"); roda(x + 78, b - 11, 11, "#cccccc");
+  } else if (i == 1) {                         // CAMINHÃO
+    pincel.fillStyle = "#e8e8f0"; pincel.fillRect(x, b - 62, 90, 44);       // carroceria
+    pincel.fillStyle = "#dd2222"; pincel.fillRect(x, b - 40, 90, 6);
+    pincel.fillStyle = "#2a6fd6"; pincel.fillRect(x + 92, b - 52, 46, 34);  // cabine
+    pincel.fillStyle = "#cfeaff"; pincel.fillRect(x + 104, b - 46, 30, 18); // janela
+    desenharPersonagem(x + 118, b - 41, p, 0.55);
+    pincel.fillStyle = "#333333"; pincel.fillRect(x, b - 20, 138, 6);
+    roda(x + 22, b - 11, 11, "#999999"); roda(x + 62, b - 11, 11, "#999999"); roda(x + 112, b - 11, 11, "#999999");
+  } else if (i == 2) {                         // NAVE DA ALEGRIA
+    pincel.fillStyle = "#ffee00";
+    pincel.fillRect(x, b - 34, 150, 22); pincel.fillRect(x + 120, b - 58, 30, 46);
+    pincel.fillStyle = "#dd2222"; pincel.fillRect(x + 28, b - 58, 92, 4);           // teto aberto
+    pincel.fillStyle = "#3377cc"; pincel.fillRect(x + 28, b - 58, 3, 24); pincel.fillRect(x + 74, b - 58, 3, 24);
+    pincel.fillStyle = "#22aa22"; pincel.fillRect(x + 117, b - 58, 3, 24);
+    pincel.fillStyle = "#224466"; pincel.fillRect(x + 126, b - 54, 20, 22);         // vidro
+    desenharPersonagem(x + 136, b - 44, p, 0.8);
+    var cores = ["#dd2222", "#3377cc", "#22aa22", "#ff8800", "#aa33cc"];            // escada colorida
+    for (var k = 0; k < 5; k++) { pincel.fillStyle = cores[k]; pincel.fillRect(x + 2 + k * 5, b - 56, 4, 24); }
+    texto("Nave da Alegria", x + 78, b - 23, 11, "#bb00bb");
+    roda(x + 34, b - 11, 11, "#22aa22"); roda(x + 120, b - 11, 11, "#3377cc");
+  } else {                                     // BUGGY
+    desenharPersonagem(x + 40, b - 44, p, 0.9);
+    pincel.fillStyle = "#ff8800";
+    pincel.fillRect(x + 6, b - 28, 68, 12); pincel.fillRect(x + 60, b - 34, 20, 8);
+    pincel.strokeStyle = "#333333"; pincel.lineWidth = 3;                           // gaiola de proteção
+    pincel.beginPath();
+    pincel.moveTo(x + 18, b - 28); pincel.lineTo(x + 26, b - 60); pincel.lineTo(x + 56, b - 60); pincel.lineTo(x + 62, b - 28);
+    pincel.stroke();
+    roda(x + 16, b - 13, 13, "#dddddd"); roda(x + 64, b - 13, 13, "#dddddd");
+  }
+}
+
+// ---------- Telas por cima do jogo ----------
+function desenharBotao(b) {
+  pincel.fillStyle = "rgba(0,0,0,0.5)";
+  pincel.fillRect(b.x - b.w / 2 + 3, b.y - b.h / 2 + 4, b.w, b.h);   // sombra
+  pincel.fillStyle = b.cor;
+  pincel.fillRect(b.x - b.w / 2, b.y - b.h / 2, b.w, b.h);
+  texto(b.txt, b.x, b.y + 1, b.fonte, "#222222");
+  if (b.corte) {                               // risco vermelho = som desligado
+    pincel.strokeStyle = "#dd2222"; pincel.lineWidth = 4;
+    pincel.beginPath(); pincel.moveTo(b.x - 14, b.y + 14); pincel.lineTo(b.x + 14, b.y - 14); pincel.stroke();
+  }
+}
+function painel(titulo, linhas, opacidade) {
+  pincel.fillStyle = "rgba(0,0,0," + opacidade + ")";
+  pincel.fillRect(0, 0, W, H);
+  textoSombra(titulo, 400, 100, 46, "#ffcc00");
+  for (var i = 0; i < linhas.length; i++) texto(linhas[i], 400, 170 + i * 34, 24, "#ffffff", "center", true);
+}
+
+function desenharHUD() {
+  var f = fases[faseAtual];
+  pincel.fillStyle = "rgba(0,0,0,0.5)";
+  pincel.fillRect(0, 0, W, 52);
+  texto("Fase " + (faseAtual + 1) + "/" + fases.length, 14, 26, 20, "#ffffff", "left");
+  pincel.fillStyle = "#333333"; pincel.fillRect(130, 12, 190, 26);                       // barra de chaves
+  pincel.fillStyle = "#ffcc00"; pincel.fillRect(130, 12, 190 * Math.min(1, chavesFase / f.meta), 26);
+  texto("Chaves " + chavesFase + "/" + f.meta, 225, 26, 16, "#000000");
+  texto("Pontos: " + pontos, 345, 26, 20, "#ffffff", "left");
+  for (var i = 0; i < VIDAS_MAX; i++) texto("♥", 520 + i * 30, 26, 28, i < vidas ? "#ff4d6d" : "#555555");
+}
+
+function desenhar(t) {
+  // Fundo: o cenário da fase. Ao mudar de fase, o antigo vai sumindo aos poucos.
+  var v = veiculos[vSel], p = personagens[pSel];
+  var tema = (estado == "menu") ? Math.floor(t / 6) % temas.length : faseAtual;
+  pincel.globalAlpha = 1;
+  cenario(tema, t);
+  if (estado == "menu" && (t % 6) > 5) {       // no menu os cenários também se misturam
+    pincel.globalAlpha = (t % 6) - 5;
+    cenario((tema + 1) % temas.length, t);
+    pincel.globalAlpha = 1;
+  }
+  if (fade > 0 && cenAnt >= 0 && estado != "menu") {
+    pincel.globalAlpha = Math.min(1, fade);
+    cenario(cenAnt, t);
+    pincel.globalAlpha = 1;
+  }
+
+  if (estado == "menu") {
+    pincel.fillStyle = "rgba(0,0,0,0.45)"; pincel.fillRect(0, 0, W, H);
+    textoSombra("Piloto Pega-Chaves", 400, 50, 44, "#ffcc00");
+    desenharVeiculo(vSel, 400 - v.larg / 2, 172, p);
+    texto("PERSONAGEM", 400, 207, 14, "#dddddd");
+    textoSombra(p.nome, 400, 232, 28, "#ffffff");
+    texto("VEÍCULO", 400, 270, 14, "#dddddd");
+    textoSombra(v.nome, 400, 295, 28, "#ffffff");
+    texto("Setas ← → ou arraste o dedo • P = pausa • M = som", 400, 436, 14, "#ffffff", "center", true);
+  } else {
+    pincel.save();
+    if (tremor > 0) pincel.translate((Math.random() - 0.5) * tremor, (Math.random() - 0.5) * tremor);
+    for (var i = 0; i < itens.length; i++) {
+      if (itens[i].tipo == "chave") desenharChave(itens[i].x, itens[i].y, itens[i].ouro, temas[faseAtual].c2);
+      else desenharPedra(itens[i].x, itens[i].y);
+    }
+    desenharVeiculo(vSel, pilotoX, CHAO, p);
+    for (var j = 0; j < efeitos.length; j++) texto(efeitos[j].txt, efeitos[j].x + 10, efeitos[j].y, 22, efeitos[j].cor);
+    pincel.restore();
+
+    if (evento && evento.tipo == "neblina") {  // neblina: só se vê perto do veículo
+      var cx = pilotoX + v.larg / 2;
+      var g = pincel.createRadialGradient(cx, 340, 40, cx, 340, 260);
+      g.addColorStop(0, "rgba(20,20,40,0)"); g.addColorStop(1, "rgba(20,20,40,0.88)");
+      pincel.fillStyle = g; pincel.fillRect(0, 0, W, H);
+    }
+    desenharHUD();
+    if (banner.resta > 0 && estado == "jogando") {
+      pincel.fillStyle = "rgba(0,0,0,0.45)"; pincel.fillRect(0, 70, W, 50);
+      textoSombra(banner.txt, 400, 95, 32, "#ffec4a");
+    }
+  }
+
+  var f = fases[faseAtual];
+  if (estado == "intro")   painel("FASE " + (faseAtual + 1), [f.nome, "Meta: pegar " + f.meta + " chaves", f.ev.length ? "Fique atento: podem surgir surpresas!" : "Cuidado para nenhuma chave cair!"], 0.5);
+  if (estado == "faseOk")  painel("FASE CONCLUÍDA!", ["Você pegou todas as chaves!", "Pontos: " + pontos + "  (+50 de bônus)", "Prepare-se para um novo cenário..."], 0.5);
+  if (estado == "fim")     painel("ACABARAM AS VIDAS", ["Calma! Você continua na fase " + (faseAtual + 1), "Pontos: " + pontos], 0.7);
+  if (estado == "vitoria") painel("VITÓRIA!", ["Você completou todas as " + fases.length + " fases!", "Pontos finais: " + pontos], 0.7);
+  if (estado == "pausa")   painel("PAUSA", ["Respire um pouquinho!"], 0.7);
+
+  var lista = botoes();
+  for (var b = 0; b < lista.length; b++) desenharBotao(lista[b]);
+}
+
+// =====================================================================
+// 11. LOOP DO JOGO (repete o tempo todo)
+// =====================================================================
+var ultimo = performance.now();
+function jogo(agora) {
+  var dt = Math.min((agora - ultimo) / 16.667, 3);
+  if (!(dt >= 0)) dt = 1;
+  ultimo = agora;
+  if (fade > 0) fade -= 0.012 * dt;            // o cenário novo aparece aos poucos
+  if (estado == "jogando") atualizar(dt);
+  desenhar(agora / 1000);
+  requestAnimationFrame(jogo);
+}
+requestAnimationFrame(jogo);
+</script>
+</body>
+</html>
